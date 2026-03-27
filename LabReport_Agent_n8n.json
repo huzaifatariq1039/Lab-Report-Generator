@@ -1,0 +1,224 @@
+{
+  "name": "ML Lab Report Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lab-report",
+        "options": {
+          "rawBody": true
+        },
+        "responseMode": "responseNode"
+      },
+      "id": "1a2b3c4d-0001-0001-0001-000000000001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "lab-report-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract uploaded file (base64) and any text fields from the multipart form\nconst body = $input.first().json.body || {};\nconst binary = $input.first().binary || {};\n\n// Support both form-data file upload and JSON with base64\nlet fileData = null;\nlet fileName = 'manual.docx';\n\nif (binary && Object.keys(binary).length > 0) {\n  // File came as binary attachment\n  const key = Object.keys(binary)[0];\n  fileData = binary[key].data;\n  fileName = binary[key].fileName || fileName;\n} else if (body.file) {\n  fileData = body.file;\n  fileName = body.fileName || fileName;\n}\n\nreturn [{\n  json: {\n    fileData,\n    fileName,\n    studentName: body.studentName || 'Huzaifa Tariq',\n    studentId:   body.studentId   || '230201039',\n    labNumber:   body.labNumber   || 'auto',\n    instructor:  body.instructor  || 'Mam Madiha',\n    subject:     body.subject     || 'ML Lab',\n    department:  body.department  || 'Computer Science'\n  },\n  binary: binary\n}];"
+      },
+      "id": "1a2b3c4d-0002-0002-0002-000000000002",
+      "name": "Parse Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key",         "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version",  "value": "2023-06-01" },
+            { "name": "Content-Type",       "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-20250514\",\n  \"max_tokens\": 4096,\n  \"system\": \"You are a lab report assistant for the Institute of Space Technology (IST), Islamabad. Your job is to:\\n1. Read the uploaded lab manual carefully\\n2. Identify the lab number, lab name, and ALL tasks\\n3. Implement/solve EVERY task exactly as instructed — no extra, no missing\\n4. Return a structured JSON with the extracted info and complete task solutions\\n\\nIMPORTANT RULES:\\n- Use only the libraries/tools mentioned in the manual\\n- Follow the exact architecture/algorithm specified\\n- Do not add tasks that are not in the manual\\n- Do not skip any task that is in the manual\\n- Code must be complete and runnable\\n- Include expected output for each task\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"{{ $json.fileData }}\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Read this lab manual carefully. Extract and return ONLY valid JSON (no markdown, no backticks) with this exact structure:\\n{\\n  \\\"labNumber\\\": \\\"07\\\",\\n  \\\"labName\\\": \\\"exact lab name from manual\\\",\\n  \\\"subject\\\": \\\"ML Lab\\\",\\n  \\\"tasks\\\": [\\n    {\\n      \\\"taskNumber\\\": 1,\\n      \\\"taskTitle\\\": \\\"exact task title\\\",\\n      \\\"instructions\\\": \\\"what the task requires\\\",\\n      \\\"code\\\": \\\"complete Python code solving the task exactly as instructed\\\",\\n      \\\"expectedOutput\\\": \\\"what the output looks like when code runs\\\",\\n      \\\"explanation\\\": \\\"2-3 sentence explanation of the approach used\\\"\\n    }\\n  ]\\n}\\n\\nIMPORTANT: Include ALL tasks from the manual. Follow every instruction exactly.\"\n        }\n      ]\n    }\n  ]\n}"
+      },
+      "id": "1a2b3c4d-0003-0003-0003-000000000003",
+      "name": "Claude — Read Manual",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude's JSON response\nconst response = $input.first().json;\nconst content = response.content?.[0]?.text || '';\n\nlet parsed;\ntry {\n  // Strip any accidental markdown fences\n  const clean = content.replace(/```json\\n?|```\\n?/g, '').trim();\n  parsed = JSON.parse(clean);\n} catch(e) {\n  // Attempt lenient extraction\n  const match = content.match(/\\{[\\s\\S]+\\}/);\n  if (match) {\n    try { parsed = JSON.parse(match[0]); }\n    catch(e2) { throw new Error('Claude did not return valid JSON: ' + content.slice(0, 200)); }\n  } else {\n    throw new Error('No JSON found in Claude response: ' + content.slice(0, 200));\n  }\n}\n\n// Carry forward student info\nconst meta = $('Parse Upload').first().json;\n\nreturn [{\n  json: {\n    labNumber:   parsed.labNumber  || meta.labNumber,\n    labName:     parsed.labName    || 'Lab',\n    subject:     parsed.subject    || meta.subject,\n    studentName: meta.studentName,\n    studentId:   meta.studentId,\n    instructor:  meta.instructor,\n    department:  meta.department,\n    tasks:       parsed.tasks      || []\n  }\n}];"
+      },
+      "id": "1a2b3c4d-0004-0004-0004-000000000004",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key",         "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version",  "value": "2023-06-01" },
+            { "name": "Content-Type",       "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-20250514\",\n  \"max_tokens\": 4096,\n  \"system\": \"You generate Python code that creates a .docx lab report file. The lab report must follow this EXACT format from IST Islamabad:\\n\\nPAGE 1 — COVER PAGE ONLY:\\n- IST logo (ist_logo.png) centered\\n- 'Institute of Space Technology, Islamabad' — bold, 28pt, centered\\n- 'Computer Science Department' — normal, 14pt, centered\\n- 'LAB REPORT' — bold, underlined, 18pt, centered\\n- Credentials table (2 cols): Lab Report No | Lab Name | Subject | Student Name | Student ID | Lab Instructor | Department\\n- Double page border on all pages\\n\\nPAGE 2+ — TASKS:\\n- Each task starts with: 'Task N: Title' bold 14pt\\n- Then 'Code:' bold 16pt, followed by code rendered as an image\\n- Then 'Output:' bold 16pt, followed by output rendered as an image\\n- Then 'Explanation:' bold 16pt, followed by 2-3 sentence explanation in 11pt\\n\\nGenerate complete, runnable Python code using python-docx and Pillow. The code must create the docx and save it as 'lab_report_output.docx'.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate the Python docx-building code for this lab report data. Return ONLY runnable Python code, no markdown fences:\\n\\n\" + JSON.stringify({{ $json }})\n    }\n  ]\n}"
+      },
+      "id": "1a2b3c4d-0005-0005-0005-000000000005",
+      "name": "Claude — Generate Docx Code",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the complete Python script for generating the .docx lab report\n// This uses the extracted task data and embeds the format rules directly\n\nconst data = $('Parse Claude Response').first().json;\nconst tasks = data.tasks || [];\n\n// Escape for Python string\nconst esc = (s) => String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n').replace(/'/g, \"\\\\'\");\n\n// Build task blocks\nlet taskBlocks = '';\nfor (const task of tasks) {\n  taskBlocks += `\n# ── Task ${task.taskNumber}: ${esc(task.taskTitle)} ──\nrender_code_image(\"\"\"${esc(task.code)}\"\"\", '/tmp/code_${task.taskNumber}.png')\nrender_output_image(\"\"\"${esc(task.expectedOutput)}\"\"\", '/tmp/output_${task.taskNumber}.png')\nlpara(doc, \"Task ${task.taskNumber}: ${esc(task.taskTitle)}\", 14, bold=True, space_before=0, space_after=8)\nlpara(doc, \"Code:\", 16, bold=True, space_after=4)\nadd_img_centered(doc, '/tmp/code_${task.taskNumber}.png', 6.5)\nlpara(doc, \"Output:\", 16, bold=True, space_before=8, space_after=4)\nadd_img_centered(doc, '/tmp/output_${task.taskNumber}.png', 6.5)\nlpara(doc, \"Explanation:\", 16, bold=True, space_before=8, space_after=4)\nlpara(doc, \"\"\"${esc(task.explanation)}\"\"\", 11, space_after=6)\n`;\n}\n\nconst script = `\nimport os, sys\nfrom docx import Document\nfrom docx.shared import Pt, Inches, Emu, Twips\nfrom docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK_TYPE\nfrom docx.oxml.ns import qn\nfrom docx.oxml import OxmlElement\nfrom docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL\nfrom PIL import Image, ImageDraw, ImageFont\n\n# ── Image rendering helpers ────────────────────────────────────────────────\nFONT_PATH = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'\nFONT_SIZE = 15\nPAD = 20\n\ndef render_code_image(code_text, path):\n    try:\n        font = ImageFont.truetype(FONT_PATH, FONT_SIZE)\n    except:\n        font = ImageFont.load_default()\n    lines = code_text.split('\\\\n')\n    line_h = FONT_SIZE + 5\n    max_chars = max((len(l) for l in lines), default=40)\n    w = max(int(max_chars * FONT_SIZE * 0.62) + PAD * 2, 900)\n    h = line_h * len(lines) + PAD * 2\n    img = Image.new('RGB', (w, h), (30, 30, 46))\n    draw = ImageDraw.Draw(img)\n    for i, line in enumerate(lines):\n        color = (106,153,85) if line.strip().startswith('#') else \\\n                (86,156,214) if any(k in line for k in ['from ','import ','def ','class ']) else \\\n                (212,212,212)\n        draw.text((PAD, PAD + i * line_h), line, font=font, fill=color)\n    img.save(path)\n\ndef render_output_image(out_text, path):\n    try:\n        font = ImageFont.truetype(FONT_PATH, FONT_SIZE)\n    except:\n        font = ImageFont.load_default()\n    lines = out_text.split('\\\\n')\n    line_h = FONT_SIZE + 5\n    max_chars = max((len(l) for l in lines), default=40)\n    w = max(int(max_chars * FONT_SIZE * 0.62) + PAD * 2, 900)\n    h = line_h * len(lines) + PAD * 2\n    img = Image.new('RGB', (w, h), (30, 30, 46))\n    draw = ImageDraw.Draw(img)\n    for i, line in enumerate(lines):\n        draw.text((PAD, PAD + i * line_h), line, font=font, fill=(212,212,212))\n    img.save(path)\n\n# ── Docx helpers ───────────────────────────────────────────────────────────\ndef cpara(doc, text, size_hp, bold=False, italic=False, underline=False, space_after=0, space_before=0):\n    p = doc.add_paragraph()\n    p.alignment = WD_ALIGN_PARAGRAPH.CENTER\n    p.paragraph_format.space_after  = Pt(space_after)\n    p.paragraph_format.space_before = Pt(space_before)\n    if text:\n        r = p.add_run(text)\n        r.bold = bold; r.italic = italic; r.underline = underline\n        r.font.size = Pt(size_hp / 2)\n    return p\n\ndef lpara(doc, text, size_hp, bold=False, italic=False, space_after=6, space_before=0, ind_left=None):\n    p = doc.add_paragraph()\n    p.alignment = WD_ALIGN_PARAGRAPH.LEFT\n    p.paragraph_format.space_after  = Pt(space_after)\n    p.paragraph_format.space_before = Pt(space_before)\n    if ind_left: p.paragraph_format.left_indent = Twips(ind_left)\n    if text:\n        r = p.add_run(text)\n        r.bold = bold; r.italic = italic\n        r.font.size = Pt(size_hp / 2)\n    return p\n\ndef blank(doc):\n    p = doc.add_paragraph()\n    p.paragraph_format.space_after  = Pt(0)\n    p.paragraph_format.space_before = Pt(0)\n\ndef add_img_centered(doc, path, width_in):\n    if not os.path.exists(path): return\n    p = doc.add_paragraph()\n    p.alignment = WD_ALIGN_PARAGRAPH.CENTER\n    p.paragraph_format.space_after  = Pt(0)\n    p.paragraph_format.space_before = Pt(0)\n    p.add_run().add_picture(path, width=Inches(width_in))\n\n# ── Build document ─────────────────────────────────────────────────────────\ndoc = Document()\nsec = doc.sections[0]\nsec.page_width    = Twips(12240)\nsec.page_height   = Twips(15840)\nsec.top_margin    = Twips(1440)\nsec.bottom_margin = Twips(1440)\nsec.left_margin   = Twips(1440)\nsec.right_margin  = Twips(1440)\n\n# Double page border\nsectPr = sec._sectPr\nfor old in sectPr.findall(qn('w:pgBorders')): sectPr.remove(old)\npgB = OxmlElement('w:pgBorders')\npgB.set(qn('w:offsetFrom'), 'page')\nfor side in ['top','left','bottom','right']:\n    b = OxmlElement(f'w:{side}')\n    b.set(qn('w:val'),'double'); b.set(qn('w:sz'),'4')\n    b.set(qn('w:space'),'24'); b.set(qn('w:color'),'auto')\n    pgB.append(b)\nsectPr.insert(0, pgB)\n\n# ── COVER PAGE ────────────────────────────────────────────────────────────\nblank(doc)\nblank(doc)\n\n# IST Logo\nif os.path.exists('ist_logo.png'):\n    add_img_centered(doc, 'ist_logo.png', 2.2)\n\n# IST Name\ncpara(doc, 'Institute of Space Technology, Islamabad', 56, bold=True)\ncpara(doc, 'Computer Science Department', 28)\nblank(doc)\ncpara(doc, 'LAB REPORT', 36, bold=True, underline=True)\nblank(doc)\n\n# Credentials table\ntbl = doc.add_table(rows=0, cols=2)\ntbl.alignment = WD_TABLE_ALIGNMENT.CENTER\ntbl.style = 'Table Grid'\n\ncreds = [\n    ('Lab Report No.', '${esc(data.labNumber)}'),\n    ('Lab Name',       '${esc(data.labName)}'),\n    ('Subject',        '${esc(data.subject)}'),\n    ('Student Name',   '${esc(data.studentName)}'),\n    ('Student ID',     '${esc(data.studentId)}'),\n    ('Lab Instructor', '${esc(data.instructor)}'),\n    ('Department',     '${esc(data.department)}'),\n]\nfor label, value in creds:\n    row = tbl.add_row()\n    for cell, w_t in zip(row.cells, [2520, 4320]):\n        tcPr = cell._tc.get_or_add_tcPr()\n        tcW  = OxmlElement('w:tcW')\n        tcW.set(qn('w:w'), str(w_t)); tcW.set(qn('w:type'), 'dxa')\n        tcPr.append(tcW)\n    c0, c1 = row.cells\n    tcPr0 = c0._tc.get_or_add_tcPr()\n    shd = OxmlElement('w:shd')\n    shd.set(qn('w:val'),'clear'); shd.set(qn('w:color'),'auto'); shd.set(qn('w:fill'),'DCE6F1')\n    tcPr0.append(shd)\n    for cell, txt, is_bold in [(c0, label, True),(c1, value, False)]:\n        cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER\n        p = cell.paragraphs[0]\n        p.paragraph_format.space_after  = Pt(2)\n        p.paragraph_format.space_before = Pt(2)\n        p.paragraph_format.left_indent  = Pt(3)\n        r = p.add_run(txt)\n        r.bold = is_bold; r.font.size = Pt(11)\n\nblank(doc)\nblank(doc)\n\n# ── PAGE BREAK ────────────────────────────────────────────────────────────\np_br = doc.add_paragraph()\np_br.paragraph_format.space_after  = Pt(0)\np_br.paragraph_format.space_before = Pt(0)\np_br.add_run().add_break(WD_BREAK_TYPE.PAGE)\n\n# ── TASKS ─────────────────────────────────────────────────────────────────\n${taskBlocks}\n\n# ── Save ──────────────────────────────────────────────────────────────────\ndoc.save('lab_report_output.docx')\nprint('DONE: lab_report_output.docx')\n`;\n\nreturn [{ json: { script, ...data } }];"
+      },
+      "id": "1a2b3c4d-0006-0006-0006-000000000006",
+      "name": "Build Python Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PYTHON_EXECUTOR_URL || 'http://localhost:5678/execute-python' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"script\": {{ JSON.stringify($json.script) }}, \"returnFile\": \"lab_report_output.docx\" }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "1a2b3c4d-0007-0007-0007-000000000007",
+      "name": "Execute Python Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300],
+      "notes": "Calls a Python execution service. See setup instructions in the sticky note."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Alternative: run the script via n8n's built-in shell execution\n// This node provides the script for manual execution or passes it through\nconst data = $input.first().json;\n\n// If Python executor returned base64 docx, extract it\nconst docxBase64 = data.fileBase64 || data.result || data.output || null;\n\nreturn [{\n  json: {\n    success: true,\n    labNumber:   data.labNumber,\n    labName:     data.labName,\n    studentName: data.studentName,\n    taskCount:   (data.tasks || []).length,\n    docxBase64,\n    script:      data.script,\n    message: docxBase64\n      ? `Lab Report ${data.labNumber} generated successfully with ${(data.tasks||[]).length} task(s).`\n      : `Script ready. Lab ${data.labNumber} - ${(data.tasks||[]).length} tasks extracted. Run the script manually or connect a Python executor.`\n  }\n}];"
+      },
+      "id": "1a2b3c4d-0008-0008-0008-000000000008",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      },
+      "id": "1a2b3c4d-0009-0009-0009-000000000009",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "content": "## 🎓 ML Lab Report Agent\n\n### What this workflow does\n1. **Receives** a lab manual file (PDF or DOCX) via webhook POST\n2. **Reads** the manual with Claude AI — extracts lab number, name, ALL tasks\n3. **Solves** every task exactly as instructed (correct libraries, architecture, etc.)\n4. **Generates** a complete Python script that builds the .docx lab report\n5. **Returns** the script + extracted data\n\n---\n\n### How to use\n\n**Send a POST request to the webhook URL:**\n```\nPOST /webhook/lab-report\nContent-Type: multipart/form-data\n\nfile=<your_lab_manual.pdf or .docx>\nstudentName=Huzaifa Tariq      (optional)\nstudentId=230201039            (optional)\nlabNumber=07                   (optional, auto-detected)\ninstructor=Mam Madiha          (optional)\nsubject=ML Lab                 (optional)\ndepartment=Computer Science    (optional)\n```\n\n**Or via curl:**\n```bash\ncurl -X POST https://your-n8n.com/webhook/lab-report \\\n  -F \"file=@Lab7.pdf\" \\\n  -F \"studentName=Huzaifa Tariq\" \\\n  -F \"studentId=230201039\"\n```\n\n---\n\n### Setup required\n\n1. **ANTHROPIC_API_KEY** — Add to n8n environment variables\n2. **ist_logo.png** — Place in the working directory where Python runs\n3. **Python packages** — `python-docx`, `Pillow` must be installed\n   ```bash\n   pip install python-docx Pillow\n   ```\n4. **Python Executor** (optional) — The `Execute Python Script` node calls\n   a local HTTP service that runs Python. You can:\n   - Skip that node and copy the `script` from the response and run it manually\n   - Or set up a simple Flask executor (see below)\n\n**Simple Python executor (save as executor.py):**\n```python\nfrom flask import Flask, request, jsonify\nimport subprocess, tempfile, base64, os\napp = Flask(__name__)\n\n@app.route('/execute-python', methods=['POST'])\ndef run():\n    data = request.json\n    with tempfile.TemporaryDirectory() as d:\n        script_path = os.path.join(d, 'script.py')\n        with open(script_path, 'w') as f:\n            f.write(data['script'])\n        # Copy ist_logo.png into temp dir\n        import shutil\n        if os.path.exists('ist_logo.png'):\n            shutil.copy('ist_logo.png', d)\n        result = subprocess.run(['python3', script_path], cwd=d,\n                                capture_output=True, text=True)\n        out_path = os.path.join(d, data.get('returnFile','output.docx'))\n        file_b64 = ''\n        if os.path.exists(out_path):\n            with open(out_path,'rb') as f:\n                file_b64 = base64.b64encode(f.read()).decode()\n        return jsonify({'fileBase64': file_b64,\n                        'stdout': result.stdout,\n                        'stderr': result.stderr})\n\nif __name__ == '__main__':\n    app.run(port=5679)\n```\nThen set env var: `PYTHON_EXECUTOR_URL=http://localhost:5679/execute-python`\n\n---\n\n### Lab Report Format (hardcoded)\n- **Page 1:** IST logo + name + double border + credentials table\n- **Page 2+:** Task N → Code (image) → Output (image) → Explanation\n- Fonts: 28pt bold IST name, 18pt bold+underline LAB REPORT, 11pt table\n- Double border on all pages (matches your Lab Report 03 format)",
+        "height": 880,
+        "width": 580,
+        "color": 5
+      },
+      "id": "1a2b3c4d-0010-0010-0010-000000000010",
+      "name": "Setup & Usage Guide",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [240, -320]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Node: Claude — Read Manual\n\nThis node sends the uploaded file to Claude and asks it to:\n- Extract lab number and name\n- Find ALL tasks in the manual\n- Write complete code for each task\n- Follow all instructions exactly\n\n**Supported file types:** PDF, DOCX\n\n> If your manual is a DOCX, convert it to PDF first, or add a conversion step before this node using LibreOffice.",
+        "height": 220,
+        "width": 300,
+        "color": 4
+      },
+      "id": "1a2b3c4d-0011-0011-0011-000000000011",
+      "name": "Note — Claude Read Manual",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [680, 540]
+    },
+    {
+      "parameters": {
+        "content": "## 📄 Node: Build Python Script\n\nThis node assembles the complete Python script that generates the .docx file.\n\nThe format is **hardcoded** to match your Lab Report 03:\n- IST logo (new version)\n- Double page border\n- Credentials table on cover\n- Tasks from page 2\n- Code + Output as dark-background images\n- Explanation in plain text\n\nThe script is returned in the response so you can also run it locally.",
+        "height": 240,
+        "width": 300,
+        "color": 4
+      },
+      "id": "1a2b3c4d-0012-0012-0012-000000000012",
+      "name": "Note — Build Script",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1340, 540]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Parse Upload", "type": "main", "index": 0 }]]
+    },
+    "Parse Upload": {
+      "main": [[{ "node": "Claude — Read Manual", "type": "main", "index": 0 }]]
+    },
+    "Claude — Read Manual": {
+      "main": [[{ "node": "Parse Claude Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Claude Response": {
+      "main": [[{ "node": "Build Python Script", "type": "main", "index": 0 }]]
+    },
+    "Build Python Script": {
+      "main": [[{ "node": "Execute Python Script", "type": "main", "index": 0 }]]
+    },
+    "Execute Python Script": {
+      "main": [[{ "node": "Prepare Response", "type": "main", "index": 0 }]]
+    },
+    "Prepare Response": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": ["lab-report", "ai-agent", "IST", "ML-lab"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-25T00:00:00.000Z",
+  "versionId": "1"
+}
